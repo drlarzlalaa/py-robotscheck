@@ -1,0 +1,12 @@
+Disallow: /early
+User-agent: *
+Disallow: private
+Disalow: /typo
+Crawl-delay: 10
+Noindex: /old/
+this line has no colon
+Sitemap: /relative-sitemap.xml
+User-agent: *
+Disallow: /
+User-agent: Googlebot
+Allow: /ok

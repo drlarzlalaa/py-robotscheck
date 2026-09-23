@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robotscheck"
+version = "0.1.0"
+description = "Parse robots.txt and test URLs against it following RFC 9309 (wildcards, end anchors, longest match), plus a linter"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "drlarzlalaa" }]
+keywords = ["robots.txt", "seo", "crawler", "rfc9309"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Internet :: WWW/HTTP :: Site Management",
+]
+dependencies = []
+
+[project.scripts]
+robotscheck = "robotscheck.__main__:main"
+
+[tool.setuptools]
+packages = ["robotscheck"]

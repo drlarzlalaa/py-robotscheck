@@ -1,0 +1,17 @@
+# robots.txt for a synthetic site (example.com)
+User-agent: *
+Disallow: /admin/
+Disallow: /cart
+Disallow: /*?sessionid=
+Allow: /admin/public/
+
+User-agent: Googlebot
+User-agent: Bingbot
+Disallow: /private/
+Allow: /private/press-kit.pdf
+
+User-agent: BadBot
+Disallow: /
+
+Sitemap: https://www.example.com/sitemap.xml
+Sitemap: https://www.example.com/sitemap-blog.xml
