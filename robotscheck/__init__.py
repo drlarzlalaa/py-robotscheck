@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from urllib.parse import quote, unquote, urlsplit
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 MAX_BYTES = 500 * 1024
 KNOWN = {"user-agent", "allow", "disallow", "sitemap"}

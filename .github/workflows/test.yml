@@ -14,4 +14,6 @@ jobs:
       - name: run tests
         run: python -m unittest discover -s tests -v
       - name: run the example
-        run: python -m robotscheck lint tests/data/example.txt --strict
+        run: |
+          python -m robotscheck lint tests/data/example.txt --strict
+          python -m robotscheck bots tests/data/ai_policy.txt --policy search=allow

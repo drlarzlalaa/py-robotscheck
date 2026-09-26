@@ -51,6 +51,7 @@ or run it from a checkout with `python -m robotscheck`.
 | `test FILE URL... [--agent NAME]` | For each URL or path: ALLOWED or BLOCKED, and the deciding rule with its line number. `--agent` takes a name (`Googlebot`) or a full User-agent string; the default is a crawler with no group of its own. |
 | `lint FILE [--strict]` | Report likely mistakes with line numbers. |
 | `sitemaps FILE` | List the `Sitemap:` lines (exit 1 if there are none). |
+| `bots FILE [--policy SPEC]` | How the file treats known AI crawlers, optionally checked against a policy. See below. |
 
 As a library:
 
@@ -60,6 +61,69 @@ import robotscheck as rc
 robots = rc.parse(open("robots.txt").read())
 allowed, rule = rc.check(robots, "Googlebot", "https://example.com/private/x")
 ```
+
+## AI crawlers: `bots`
+
+Most sites now want a policy for AI crawlers (block training, allow the ones that send readers, decide about the rest), and `robots.txt` is where it is written. `bots` reads a `robots.txt` and reports, for each well-known AI crawler, which group applies to it and whether it may fetch your paths. With `--policy` it becomes a check that exits 1 when the file does not implement what you meant.
+
+```
+$ python -m robotscheck bots tests/data/ai_policy.txt --policy training=block,search=allow,user=allow
+AI crawlers against / (crawler list as of 2026-09-26; it changes, see the README)
+
+TRAINING (collects content to train models)
+  BLOCKED  GPTBot              OpenAI        group 'gptbot'             Disallow: / (line 5)
+  BLOCKED  ClaudeBot           Anthropic     group 'claudebot'          Disallow: / (line 5)
+  ALLOWED  anthropic-ai        Anthropic     group '*'                  no rule matches
+  BLOCKED  Google-Extended     Google        group 'google-extended'    Disallow: / (line 8)
+  ALLOWED  Applebot-Extended   Apple         group '*'                  no rule matches
+  ALLOWED  meta-externalagent  Meta          group '*'                  no rule matches
+  ALLOWED  Bytespider          ByteDance     group '*'                  no rule matches
+  BLOCKED  CCBot               Common Crawl  group 'ccbot'              Disallow: / (line 5)
+
+SEARCH (builds an index that AI search products cite)
+  ALLOWED  OAI-SearchBot       OpenAI        group 'oai-searchbot'      Allow: / (line 12)
+  ALLOWED  Claude-SearchBot    Anthropic     group '*'                  no rule matches
+  ALLOWED  PerplexityBot       Perplexity    group 'perplexitybot'      Allow: / (line 12)
+
+USER-TRIGGERED (fetches a page because a person asked; may ignore robots.txt)
+  ALLOWED  ChatGPT-User        OpenAI        group '*'                  no rule matches
+  ALLOWED  Claude-User         Anthropic     group '*'                  no rule matches
+  ALLOWED  Perplexity-User     Perplexity    group '*'                  no rule matches
+
+OTHER
+  ALLOWED  OAI-AdsBot          OpenAI        group '*'                  no rule matches
+  ALLOWED  Amazonbot           Amazon        group '*'                  no rule matches
+
+Blocked on every path: training 4 of 8, search 0 of 3, user 0 of 3, other 0 of 2
+Policy: training=block, search=allow, user=allow
+  MISMATCH  anthropic-ai (training) is not blocked on: /
+  MISMATCH  Applebot-Extended (training) is not blocked on: /
+  MISMATCH  meta-externalagent (training) is not blocked on: /
+  MISMATCH  Bytespider (training) is not blocked on: /
+policy NOT met
+```
+
+Look at the last block: `anthropic-ai`, `Applebot-Extended`, `meta-externalagent` and `Bytespider` are **not blocked**, because the file names some training crawlers but not these, so they fall through to the `User-agent: *` group, which only blocks `/admin/` and `/cart`. That gap is the usual reason a "we block AI training" robots.txt does not.
+
+| Option | What it does |
+|---|---|
+| `--path P` | A path to test (repeatable, default `/`). With several, a crawler that is blocked on some and not others shows as `PARTIAL`, and a `block` policy needs it blocked on all of them. |
+| `--policy SPEC` | Desired treatment, `category=block` or `category=allow`, comma-separated: `training=block,search=allow,user=allow`. Categories are `training`, `search`, `user`, `other` and `all`. Explicit items win over `all`, in either order. |
+| `--bots-file F` | Add or correct crawlers: lines of `Token,category[,vendor[,note]]`, `#` comments allowed. An entry replaces the built-in one with the same token. |
+| `--json` | Machine-readable output, including the list date, each crawler's group and deciding rule, and the policy violations. |
+
+Exit status: `0` report printed (or policy met), `1` policy not met, `2` bad option, policy or file.
+
+### About the crawler list
+
+The list (16 tokens in `robotscheck/aibots.py`, dated `AS_OF`) is **data that goes out of date**. Categories follow how vendors and reference sources describe them: *training* crawlers collect content for models, *search* crawlers build an index that AI search products cite, and *user-triggered* fetchers retrieve a page because a person asked. On 2026-09-26 the OpenAI and Anthropic entries were checked against those vendors' own pages ([OpenAI's bots page](https://developers.openai.com/api/docs/bots) and [Anthropic's help-centre article](https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler)), which name `GPTBot`, `OAI-SearchBot`, `ChatGPT-User`, `OAI-AdsBot`, `ClaudeBot`, `Claude-SearchBot` and `Claude-User`. The other vendors' entries (Perplexity, Google, Apple, Meta, ByteDance, Common Crawl, Amazon) come from independent 2026 crawler references, not from those vendors' pages, and `anthropic-ai` is kept only because it is widespread in existing files. Correct the list with `--bots-file` if a vendor changes a name.
+
+Things this can and cannot tell you:
+
+- **User-triggered fetchers may ignore robots.txt.** OpenAI's page says robots.txt rules "may not apply" to `ChatGPT-User`, `Perplexity-User` is reported not to follow it (a secondary report), while Anthropic states `Claude-User` does. A `BLOCKED` verdict for those means "the file asks", not "they will comply". The output says so under that heading.
+- **`Google-Extended` and `Applebot-Extended` are control tokens**, not separate crawlers: they are read by Google's and Apple's own crawlers, and govern AI use, not search indexing.
+- **A verdict is about the file, not behaviour.** Some crawlers, `Bytespider` in particular, are widely reported to ignore `robots.txt`. Blocking there is a request. To enforce, use server or CDN rules (verify the crawler's published IP ranges, do not trust the User-agent string alone).
+- **Crawlers you did not list are governed by `*`.** That is the RFC 9309 rule, and it is the point of the report.
 
 ## How matching works (RFC 9309)
 
@@ -80,13 +144,13 @@ allowed, rule = rc.check(robots, "Googlebot", "https://example.com/private/x")
 - **Offline.** It never fetches `robots.txt` itself; give it a file or standard input.
 - **Only `User-agent`, `Allow`, `Disallow` and `Sitemap`** affect the result; other directives are reported by `lint` but not interpreted.
 
-## Tests
+## How it was checked
 
 ```
 python -m unittest discover -s tests -v
 ```
 
-34 tests cover the documented matching examples (prefixes, wildcards, end anchors, longest match, ties), group selection and merging, percent-encoding, BOM and CRLF files, every lint code with line numbers, and the commands with their exit codes. CI runs them on Python 3.9 to 3.13.
+54 tests cover the documented matching examples (prefixes, wildcards, end anchors, longest match, ties), group selection and merging, percent-encoding, BOM and CRLF files, every lint code with line numbers, and the commands with their exit codes. The `bots` tests check the crawler list is well formed (unique tokens, valid categories, each token survives `product_token` unchanged), the group rule that surprises people (a named group replaces `*` entirely), case-insensitive names, several paths, policy parsing and its error cases, both orders of `all=` against explicit items, the bots-file format, JSON output and exit codes; two deliberate breakages of the code (a wrong "blocked everywhere" test and a wrong policy precedence) were confirmed to make tests fail. CI runs them on Python 3.9 to 3.13.
 
 ## Licence
 
