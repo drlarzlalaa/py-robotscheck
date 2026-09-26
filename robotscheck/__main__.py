@@ -8,6 +8,7 @@ import json
 
 from . import __version__, check, parse, rules_for, product_token
 from . import aibots
+from . import SIGNALS, licenses_for, signals_for
 
 
 def _read(path: str) -> str:
@@ -36,6 +37,11 @@ def main(argv=None) -> int:
     b.add_argument("--policy", help="desired treatment, e.g. training=block,search=allow,user=allow (categories: training, search, user, other, all); exit 1 if the file does not match")
     b.add_argument("--bots-file", help="extra or corrected crawlers: lines of Token,category[,vendor[,note]]")
     b.add_argument("--json", action="store_true")
+    g = sub.add_parser("signals", help="Content-Signal and License (RSL) lines, and what each crawler ends up with")
+    g.add_argument("file", help="robots.txt file, or - for stdin")
+    g.add_argument("--agent", action="append", help="crawler to show (repeatable; default: * and every known AI crawler)")
+    g.add_argument("--expect", help="signals every shown crawler must state, e.g. ai-train=no,search=yes; exit 1 if any does not (a signal that is not stated does not match)")
+    g.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
         robots = parse(_read(args.file))
@@ -45,6 +51,8 @@ def main(argv=None) -> int:
 
     if args.command == "bots":
         return _bots(args, robots)
+    if args.command == "signals":
+        return _signals(args, robots)
 
     if args.command == "sitemaps":
         for url, _ in robots.sitemaps:
@@ -68,6 +76,66 @@ def main(argv=None) -> int:
         why = "%s (line %d)" % (rule, rule.line) if rule else "no rule matches"
         print("%-8s %-40s %s" % ("ALLOWED" if ok else "BLOCKED", url, why))
     return 1 if blocked else 0
+
+
+def _parse_expect(spec):
+    out = {}
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        name, _, val = item.partition("=")
+        name, val = name.strip().lower(), val.strip().lower()
+        if name not in SIGNALS or val not in ("yes", "no"):
+            raise ValueError("expected signals like ai-train=no (names: %s; values: yes or no), got %r" % (", ".join(SIGNALS), item))
+        out[name] = val
+    if not out:
+        raise ValueError("empty --expect")
+    return out
+
+
+def _signals(args, robots) -> int:
+    try:
+        expect = _parse_expect(args.expect) if args.expect else None
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    agents = args.agent or (["*"] + [b.token for b in aibots.BOTS])
+    rows = []
+    for a in agents:
+        sig, group = signals_for(robots, a)
+        lic, scope = licenses_for(robots, a)
+        rows.append({"agent": a, "group": group, "signals": sig, "licenses": lic, "license_scope": scope})
+    problems = []
+    if expect:
+        for r in rows:
+            for name, want in expect.items():
+                got = r["signals"].get(name)
+                if got != want:
+                    why = ("not stated%s" % (" (its group '%s' has no Content-Signal for it)" % r["group"])) if got is None else "is %s" % got
+                    problems.append("%s: %s=%s expected but %s" % (r["agent"], name, want, why))
+    if args.json:
+        print(json.dumps({"groups": [{"agents": g.agents, "line": g.line, "signals": {s.name: s.value for s in g.signals}, "licenses": [u for u, _ in g.licenses]} for g in robots.groups],
+                          "global_licenses": [u for u, _ in robots.licenses], "effective": rows, "expect": expect, "mismatches": problems}, indent=2))
+        return 1 if problems else 0
+    print("Content-Signal and License lines (signal names from the IETF draft; the line syntax is the one Cloudflare deploys)")
+    for u, n in robots.licenses:
+        print("  License (global, line %d): %s" % (n, u))
+    for g in robots.groups:
+        sigs = ", ".join("%s=%s" % (s.name, s.value) for s in g.signals) or "no signals"
+        lic = "; License: " + ", ".join(u for u, _ in g.licenses) if g.licenses else ""
+        print("  group %s (line %d): %s%s" % (", ".join("'%s'" % a for a in g.agents), g.line, sigs, lic))
+    print("\nEffective for each crawler (a named group replaces the '*' group; a signal not stated means no preference, shown as -):")
+    for r in rows:
+        vals = "  ".join("%s=%s" % (name, r["signals"].get(name, "-")) for name in SIGNALS)
+        lic = "License %s" % r["license_scope"] if r["licenses"] else "no License"
+        print("  %-20s group %-18s %s   %s" % (r["agent"], "'%s'" % r["group"], vals, lic))
+    if expect:
+        print("\nExpected: " + ", ".join("%s=%s" % kv for kv in expect.items()))
+        for m in problems:
+            print("  MISMATCH  " + m)
+        print("signals %s" % ("do NOT match" if problems else "match"))
+    return 1 if problems else 0
 
 
 def _bots(args, robots) -> int:

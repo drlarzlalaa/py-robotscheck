@@ -52,6 +52,7 @@ or run it from a checkout with `python -m robotscheck`.
 | `lint FILE [--strict]` | Report likely mistakes with line numbers. |
 | `sitemaps FILE` | List the `Sitemap:` lines (exit 1 if there are none). |
 | `bots FILE [--policy SPEC]` | How the file treats known AI crawlers, optionally checked against a policy. See below. |
+| `signals FILE [--expect SPEC]` | The `Content-Signal` and `License` lines, and what each crawler ends up with. See below. |
 
 As a library:
 
@@ -125,6 +126,61 @@ Things this can and cannot tell you:
 - **A verdict is about the file, not behaviour.** Some crawlers, `Bytespider` in particular, are widely reported to ignore `robots.txt`. Blocking there is a request. To enforce, use server or CDN rules (verify the crawler's published IP ranges, do not trust the User-agent string alone).
 - **Crawlers you did not list are governed by `*`.** That is the RFC 9309 rule, and it is the point of the report.
 
+## AI preferences in robots.txt: `Content-Signal` and `License`
+
+Two newer lines now appear in real `robots.txt` files, and older versions of this tool (and most linters) wrongly reported both as unknown directives:
+
+- **`Content-Signal: ai-train=no, search=yes, ai-input=no`**, deployed by Cloudflare across millions of domains. The three signals are defined by the IETF Internet-Draft `draft-romm-aipref-contentsignals` (now expired): `search` (building a search index and showing results), `ai-input` (feeding content to an AI model for retrieval-augmented generation) and `ai-train` (training or fine-tuning models). That draft does not define the line's syntax; the syntax used here is the one seen in real files and described by Cloudflare: comma-separated `name=yes` or `name=no` pairs, placed inside a `User-agent` group. A signal that is not stated means no preference.
+- **`License: https://example.com/license.xml`**, from the Really Simple Licensing (RSL 1.0) standard. The value must be an absolute URI. It may appear before the first `User-agent` line (global) or inside a group, and a group's `License` takes precedence over a global one.
+
+`lint` now understands both. `signals` shows what each crawler actually ends up with:
+
+```
+$ python -m robotscheck signals tests/data/signals.txt --agent '*' --agent GPTBot --agent ClaudeBot --agent Bytespider --expect ai-train=no
+Content-Signal and License lines (signal names from the IETF draft; the line syntax is the one Cloudflare deploys)
+  License (global, line 2): https://example.com/license.xml
+  group '*' (line 4): search=yes, ai-input=no, ai-train=no
+  group 'gptbot' (line 9): no signals
+  group 'claudebot' (line 12): ai-train=no
+
+Effective for each crawler (a named group replaces the '*' group; a signal not stated means no preference, shown as -):
+  *                    group '*'                search=yes  ai-input=no  ai-train=no   License global
+  GPTBot               group 'gptbot'           search=-  ai-input=-  ai-train=-   License global
+  ClaudeBot            group 'claudebot'        search=-  ai-input=-  ai-train=no   License global
+  Bytespider           group '*'                search=yes  ai-input=no  ai-train=no   License global
+
+Expected: ai-train=no
+  MISMATCH  GPTBot: ai-train=no expected but not stated (its group 'gptbot' has no Content-Signal for it)
+signals do NOT match
+```
+
+Look at `GPTBot`. The file says `ai-train=no` for `*`, but GPTBot has its own group (for a `Disallow`), and a named group **replaces** the `*` group entirely, so under normal robots.txt grouping GPTBot sees no signal at all. `--expect ai-train=no` catches exactly that, and exits 1 when any shown crawler does not state what you expect. By default `signals` shows `*` and every crawler in the AI-crawler list; `--agent` (repeatable) narrows it. A signal that is not stated is shown as `-`, and never counts as a match.
+
+A second mistake, seen in a real, widely deployed file, is placing a `Content-Signal` line **after another group's rules**: a line joins the group above it, so the signal then belongs to that one crawler and everything else that uses `*` sees none. `lint` reports that as `content-signal-not-for-all`. The same applies to `License`.
+
+```
+$ python -m robotscheck lint problems.txt
+warning  content-signal-value line 7: signal search has value 'maybe'; expected yes or no
+warning  content-signal-syntax line 7: 'ai-input' is not name=value
+warning  license-not-absolute line 8: License must be an absolute URI (RSL): 'license.xml'
+info     content-signal-not-for-all line 7: the Content-Signal on line 7 belongs to the group for ccbot; crawlers that use 'User-agent: *' see no signal. A line placed after another group's rules joins that group, so move it under 'User-agent: *' if you meant it for everyone
+info     license-in-group     line 8: the License on line 8 belongs to the group for ccbot only; a License before the first User-agent line applies to every crawler
+2 group(s), 0 sitemap(s), 3 issue(s) to look at
+```
+
+| Code | Level | Meaning |
+| --- | --- | --- |
+| `content-signal-syntax` | warning | Not `name=value` pairs, or empty. |
+| `content-signal-value` | warning | A value that is not `yes` or `no`. |
+| `content-signal-conflict` | warning | The same signal stated as both `yes` and `no` in one group. |
+| `content-signal-outside-group` | warning | A `Content-Signal` before any `User-agent` line, which applies to no group. |
+| `content-signal-unknown-signal`, `content-signal-duplicate` | info | A name other than `search`, `ai-input`, `ai-train` (kept, not interpreted); the same signal stated twice with the same value. |
+| `content-signal-not-for-all` | info | Signals sit only in named groups while `User-agent: *` has none. |
+| `license-not-absolute` | warning | The value is not an absolute URI. |
+| `license-insecure`, `license-duplicate`, `license-in-group` | info | The licence is fetched over `http`; the same licence twice in one scope; a `License` inside a group, so it applies to that group's crawlers only. |
+
+**Limits.** These lines are *preferences*: they do not stop a crawler, and this tool cannot say who honours them. Group selection for `Content-Signal` is not specified by the draft, so this tool assumes the usual robots.txt behaviour. The `no` value and the "not stated means no preference" rule come from Cloudflare's own documentation as reported by secondary sources; the real files sampled for this project all used `yes`. `License` follows the RSL 1.0 specification (read in full), but the tool never fetches or validates the licence document.
+
 ## How matching works (RFC 9309)
 
 - **Which group.** A group that names the crawler's product token (case-insensitive) is used; otherwise the `User-agent: *` group. Several `User-agent` lines in a row share one group, and multiple groups for the same agent are merged. Rules from a different group never leak in.
@@ -150,7 +206,7 @@ Things this can and cannot tell you:
 python -m unittest discover -s tests -v
 ```
 
-54 tests cover the documented matching examples (prefixes, wildcards, end anchors, longest match, ties), group selection and merging, percent-encoding, BOM and CRLF files, every lint code with line numbers, and the commands with their exit codes. The `bots` tests check the crawler list is well formed (unique tokens, valid categories, each token survives `product_token` unchanged), the group rule that surprises people (a named group replaces `*` entirely), case-insensitive names, several paths, policy parsing and its error cases, both orders of `all=` against explicit items, the bots-file format, JSON output and exit codes; two deliberate breakages of the code (a wrong "blocked everywhere" test and a wrong policy precedence) were confirmed to make tests fail. CI runs them on Python 3.9 to 3.13.
+81 tests cover the documented matching examples (prefixes, wildcards, end anchors, longest match, ties), group selection and merging, percent-encoding, BOM and CRLF files, every lint code with line numbers, and the commands with their exit codes. The `signals` tests cover each rule with matching and non-matching lines; 400 generated `robots.txt` files written from a known structure (random groups, signals and licences, in single and split `Content-Signal` lines) that must parse back to exactly that structure; and, for group selection, 300 more where the effective signals are computed independently and compared. The first generator was wrong, not the parser: a group with no line of its own merges into the next group under RFC 9309, and it now always gives each group a line. Four deliberate breakages of the new logic (group choice, licence precedence, conflict versus duplicate, the not-for-all condition) each made tests fail. Against real files, an opt-in test (`ROBOTS_REAL_DIR`) checks public `robots.txt` files that use these lines, fetched on 2026-09-26 and not stored in the repository: none produces a false `unknown-directive` any more, the observed signals and licences read back as expected, and the misplaced-line case is reported. The `bots` tests check the crawler list is well formed (unique tokens, valid categories, each token survives `product_token` unchanged), the group rule that surprises people (a named group replaces `*` entirely), case-insensitive names, several paths, policy parsing and its error cases, both orders of `all=` against explicit items, the bots-file format, JSON output and exit codes; two deliberate breakages of the code (a wrong "blocked everywhere" test and a wrong policy precedence) were confirmed to make tests fail. CI runs them on Python 3.9 to 3.13.
 
 ## Licence
 

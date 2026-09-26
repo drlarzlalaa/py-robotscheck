@@ -1,0 +1,14 @@
+# Synthetic example: a site-wide AI preference, one crawler given its own group.
+License: https://example.com/license.xml
+
+User-agent: *
+Content-Signal: search=yes, ai-input=no, ai-train=no
+Allow: /
+Disallow: /private/
+
+User-agent: GPTBot
+Disallow: /drafts/
+
+User-agent: ClaudeBot
+Content-Signal: ai-train=no
+Allow: /

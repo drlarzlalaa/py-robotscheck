@@ -17,3 +17,4 @@ jobs:
         run: |
           python -m robotscheck lint tests/data/example.txt --strict
           python -m robotscheck bots tests/data/ai_policy.txt --policy search=allow
+          python -m robotscheck signals tests/data/signals.txt --agent '*' --agent ClaudeBot --expect ai-train=no
